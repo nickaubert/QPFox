@@ -1,0 +1,151 @@
+#!/bin/bash
+################################################################################################
+#
+#  QPFox packs Firefox's profile into tmpfs
+#  see http://forums.gentoo.org/viewtopic-t-717117.html
+#
+# 1. check environment:
+#   a. entry in /etc/fstab
+#   b. profile dir is empty if not mounted tmpfs
+#   if either condition is false, print setup info
+# 2. check pack direction:
+#   tmpfs is mounted
+#       vacuum sqlite dbs
+#       pack it to archive
+#   tmpfs not mounted
+#       mount and unpack
+#
+################################################################################################
+
+START_TIME=$( date +%s )
+
+## Change this to match your correct profile 
+#  If blank, this script will grab whatever profile is most recent
+#
+PROFILE=""
+FFOX_HOME="${HOME}/.mozilla/firefox"
+
+## Preferred compression utility
+#  The options are: none, gzip or lzop
+#  If blank, the script will select lzop if available or default to gzip
+#
+COMPRESSOR="lzop"
+export GZIP='--fast'    # option for gzip
+
+## get more recent profile in home dir if not defined
+#
+if [[ ${PROFILE} == "" ]]; then
+    PROFILE=$( basename $( ls -rdt ${HOME}/.mozilla/firefox/*.default | tail -n 1 ) )
+fi
+
+## Check that environment is set up right
+#  a. We found the ffox profile
+#  b. There should be an entry in /etc/fstab
+#  c. The profile should be an empty directory if the tmps is unmounted
+#  d. Firefox is not running
+#
+FAILED_CHECKS=0
+if [[ ${PROFILE} == "" ]]; then
+    echo "Cannot find firefox profile directory"
+    exit 3
+fi
+if [[ $( grep "${FFOX_HOME}/${PROFILE}" /etc/fstab ) == "" ]]; then
+    FAILED_CHECKS=1
+fi
+if test -z "$(mount | grep -F "${FFOX_HOME}/${PROFILE}" )"; then
+    if [[ -d "${FFOX_HOME}/${PROFILE}" ]]; then
+        FAILED_CHECKS=$( ls ${FFOX_HOME}/${PROFILE}/* 2> /dev/null| wc -l )
+    fi
+fi
+if [[ $( ps -e | grep -v grep | grep -c firefox ) != 0 ]]; then
+    echo "Quit Firefox before packing the profile"
+    exit 4
+fi
+
+if [[ ${FAILED_CHECKS} != 0 ]]; then
+    echo "See the Gentoo forums for an explanation of how this works: http://forums.gentoo.org/viewtopic-t-717117.html"
+    echo ""
+    echo "Make sure a line like this one is in /etc/fstab:"
+    GID=$( id -g )
+    echo "firefox ${FFOX_HOME}/${PROFILE} tmpfs noauto,user,exec,uid=${UID},gid=${GID} 0 0"
+    echo ""
+    echo "Quit firefox and tar a copy of the profile:"
+    echo "  cd ${FFOX_HOME}"
+    echo "  tar -czpf ${PROFILE}.tar.gz ${PROFILE}   #(this is for gzip compression)"
+    echo "      OR"
+    echo "  tar -cp ${PROFILE} | lzop -c > ${PROFILE}.tar.lzo   #(this is for lzop compression)"
+    echo "      OR"
+    echo "  tar -cpf ${PROFILE}.tar ${PROFILE}   #(this is for no compression)"
+    echo "Back up your profile and create an empty directory:"
+    echo "  mv -i ${PROFILE} ${PROFILE}.bak && mkdir ${PROFILE}"
+    exit 2
+fi
+
+## define how to pack/unpack profile
+#
+PACKLZO="tar --exclude '.unpackt' -C ${FFOX_HOME} -cp \"${PROFILE}\" | lzop -c > ${FFOX_HOME}/${PROFILE}.tar.lzo"
+UNPACKLZO="lzop -cd \"${FFOX_HOME}/${PROFILE}.tar.lzo\" | tar -C ${FFOX_HOME} -xp"
+PACKGZP="tar --exclude '.unpackt' -C ${FFOX_HOME} -czpf ${FFOX_HOME}/${PROFILE}.tar.gz \"${PROFILE}\""
+UNPACKGZP="tar -C ${FFOX_HOME} -xzpf ${FFOX_HOME}/${PROFILE}.tar.gz"
+PACKTAR="tar --exclude '.unpackt' -C ${FFOX_HOME} -cpf ${FFOX_HOME}/${PROFILE}.tar \"${PROFILE}\""
+UNPACKTAR="tar -C ${FFOX_HOME} -xpf ${FFOX_HOME}/${PROFILE}.tar"
+
+## set pack/unpack command based on available utilities
+#
+PACKCMD=""
+UNPACKCMD=""
+if [[ ${COMPRESSOR} == "lzop" ]]; then
+    PACKCMD=${PACKLZO} 
+    UNPACKCMD=${UNPACKLZO}
+elif [[ ${COMPRESSOR} == "gzip" ]]; then
+    PACKCMD=${PACKGZP}
+    UNPACKCMD=${UNPACKGZP}
+else
+    PACKCMD=${PACKTAR}
+    UNPACKCMD=${UNPACKTAR}
+fi
+
+## Check mount point
+#
+if test -z "$(mount | grep -F "${FFOX_HOME}/${PROFILE}" )"; then
+
+    mount "${FFOX_HOME}/${PROFILE}"
+
+    if [[ $? != 0 ]]; then
+        echo "Failed to mount tmpfs"
+        exit 1
+    fi
+fi
+
+## if sqlite3 is available, vacuum dbs before packing
+#
+if test $( which sqlite3 ); then
+    for sqdb in $( ls ${FFOX_HOME}/${PROFILE}/*.sqlite ); do
+        echo "vacuuming ${sqdb}..."
+        sqlite3 ${sqdb} vacuum
+    done
+fi
+
+## Things look good, so pack if running profile found, or unpack if profile empty
+#
+if [[ -f "${FFOX_HOME}/${PROFILE}/.unpackt" ]]; then 
+    echo -n "tarring firefox... "
+    bash -c "${PACKCMD}"
+    if [[ $? != 0 ]]; then
+        echo "Failed to pack the profile"
+        exit 4
+    fi
+else
+    bash -c "${UNPACKCMD}"
+    echo "unpacking!"
+    if [[ $? != 0 ]]; then
+        echo "Failed to unpack the profile"
+        exit 5
+    fi
+    touch "${FFOX_HOME}/${PROFILE}/.unpackt"
+fi
+
+END_TIME=$( date +%s )
+RUN_TIME=$(( ${END_TIME} - ${START_TIME} ))
+echo "done in ${RUN_TIME} seconds!"
+
