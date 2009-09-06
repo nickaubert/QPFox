@@ -117,24 +117,27 @@ if test -z "$(mount | grep -F "${FFOX_HOME}/${PROFILE}" )"; then
     fi
 fi
 
-## if sqlite3 is available, vacuum dbs before packing
-#
-if test $( which sqlite3 ); then
-    for sqdb in $( ls ${FFOX_HOME}/${PROFILE}/*.sqlite ); do
-        echo "vacuuming ${sqdb}..."
-        sqlite3 ${sqdb} vacuum
-    done
-fi
 
 ## Things look good, so pack if running profile found, or unpack if profile empty
 #
 if [[ -f "${FFOX_HOME}/${PROFILE}/.unpackt" ]]; then 
+
+    ## if sqlite3 is available, vacuum dbs before packing
+    #
+    if test $( which sqlite3 ); then
+        for sqdb in $( ls ${FFOX_HOME}/${PROFILE}/*.sqlite ); do
+            echo "vacuuming ${sqdb}..."
+            sqlite3 ${sqdb} vacuum
+        done
+    fi
+
     echo -n "tarring firefox... "
     bash -c "${PACKCMD}"
     if [[ $? != 0 ]]; then
         echo "Failed to pack the profile"
         exit 4
     fi
+
 else
     bash -c "${UNPACKCMD}"
     echo "unpacking!"
